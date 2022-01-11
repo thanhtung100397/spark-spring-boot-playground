@@ -5,59 +5,59 @@ import org.apache.spark.sql.SparkSession
 
 object ProductTrending {
 
-  def parseCsvRowUser(csvRow: String): Option[(Int, String, Int)] = {
+  def parseCsvRowUser(csvRow: String): (Int, String, Int) = {
     val parts = csvRow.split(",")
     if (parts.length >= 3) {
       try {
         val userId = parts(0).trim().toInt
         val fullName = parts(1).trim()
         val age = parts(2).trim().toInt
-        if (userId > 0 && !fullName.isEmpty && age > 0) {
-          return Some((userId, fullName, age))
+        if (userId > 0 && fullName.nonEmpty && age > 0) {
+          return (userId, fullName, age)
         }
-        None
+        null
       } catch {
-        case _: Exception => None
+        case _: Exception => null
       }
     } else {
-      None
+      null
     }
   }
 
-  def parseCsvRowProduct(csvRow: String): Option[(Int, String, Int)] = {
+  def parseCsvRowProduct(csvRow: String): (Int, String, Int) = {
     val parts = csvRow.split(",")
     if (parts.length >= 3) {
       try {
         val productId = parts(0).trim().toInt
         val productName = parts(1).trim()
         val quantity = parts(2).trim().toInt
-        if (productId > 0 && !productName.isEmpty && quantity > 0) {
-          return Some((productId, productName, quantity))
+        if (productId > 0 && productName.nonEmpty && quantity > 0) {
+          return (productId, productName, quantity)
         }
-        None
+        null
       } catch {
-        case _: Exception => None
+        case _: Exception => null
       }
     } else {
-      None
+      null
     }
   }
 
-  def parseCsvRowWishList(csvRow: String): Option[(Int, Int)] = {
+  def parseCsvRowWishList(csvRow: String): (Int, Int) = {
     val parts = csvRow.split(",")
     if (parts.length >= 2) {
       try {
         val userId = parts(0).trim().toInt
         val productId = parts(1).trim().toInt
         if (userId > 0 && productId > 0) {
-          return Some((userId, productId))
+          return (userId, productId)
         }
-        None
+        null
       } catch {
-        case _: Exception => None
+        case _: Exception => null
       }
     } else {
-      None
+      null
     }
   }
 
@@ -75,14 +75,29 @@ object ProductTrending {
     val rawWishList: RDD[String] = spark.sparkContext.textFile("data/csv/wishlist.csv")
 
     val users = rawUsers.map(csvRow => parseCsvRowUser(csvRow))
-                .filter(data => data.isDefined)
-    val products = rawUsers.map(csvRow => parseCsvRowProduct(csvRow))
-                   .filter(data => data.isDefined)
-    val wishlist = rawUsers.map(csvRow => parseCsvRowWishList(csvRow))
-                   .filter(data => data.isDefined)
+                .filter(data => data != null)
+    val products = rawProducts.map(csvRow => parseCsvRowProduct(csvRow))
+                   .filter(data => data != null)
+    val wishlist = rawWishList.map(csvRow => parseCsvRowWishList(csvRow))
+                   .filter(data => data != null)
 
     val userDf = users.toDF("id", "name", "age")
-    val productDf = users.toDF("id", "name", "quantity")
-    val wishlistDf = users.toDF("user_id", "product_id")
+    val productDf = products.toDF("id", "name", "quantity")
+    val wishlistDf = wishlist.toDF("user_id", "product_id")
+
+    userDf.show();
+    productDf.show();
+    wishlistDf.show();
+
+    userDf.as("u")
+      .join(wishlistDf.as("wl"), col("u.id") === col("wl.user_id"), "inner")
+      .join(productDf.as("p"), col("wl.product_id") === col("p.id"), "inner")
+      .groupBy(col("p.id"))
+      .agg(
+        first("p.name").as("name"),
+        first("p.quantity").as("quantity"),
+        count("p.id").as("total_wished")
+      )
+      .show()
   }
 }
