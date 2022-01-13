@@ -1,4 +1,4 @@
-package com.tungtt.bigdata.entities
+package com.tungtt.bigdata.models
 
 case class PhieuGui(var id_phieugui: Int,
                     var ma_phieugui: String,

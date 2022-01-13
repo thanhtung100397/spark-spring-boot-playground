@@ -1,8 +1,7 @@
 package com.tungtt.bigdata
 
-import com.tungtt.bigdata.entities.PhieuGui
+import com.tungtt.bigdata.models.{PhieuGui, SyncData}
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
-import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 object PhieuGuiReportTask {
@@ -25,7 +24,7 @@ object PhieuGuiReportTask {
     "user" -> "",
     "password" -> "",
     "driver" -> "org.postgresql.Driver",
-    "url" -> "jdbc:postgresql://<ip>:5432/postgres"
+    "url" -> "jdbc:postgresql://:5432/postgres"
   )
 
   def main(args: Array[String]): Unit = {
@@ -44,41 +43,25 @@ object PhieuGuiReportTask {
              .option("subscribe", "phieu_gui")
              .load()
 
-    val ds = df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)")
-               .as[(String, String)]
+    val ds = df.selectExpr("CAST(value AS STRING)").as[String]
+               .select(from_json($"value", phieuGuiStruct).as[SyncData[PhieuGui]])
+               .map(syncData => syncData.payload.after)
 
-    val phieuGuiDs = ds.select(from_json($"value", phieuGuiStruct).alias("data"))
-                       .map(value => {
-                         val data = value.getAs[GenericRowWithSchema]("data")
-                                         .getAs[GenericRowWithSchema]("payload")
-                                         .getAs[GenericRowWithSchema]("after")
-                         PhieuGui(
-                           data.getAs[Int]("id_phieugui"),
-                           data.getAs[String]("ma_phieugui"),
-                           data.getAs[Int]("gui_trongnuoc"),
-                           data.getAs[String]("ma_khgui"),
-                           data.getAs[String]("ten_khgui"),
-                           data.getAs[String]("diachi_khgui"),
-                         )
-                       })
+//    ds.writeStream
+//      .foreachBatch((dataSet: Dataset[PhieuGui], batchId: Long) => {
+//        dataSet.write
+//               .format("jdbc")
+//               .options(postgresqlSinkOptions)
+//               .mode(SaveMode.Append)
+//               .save()
+//      })
+//      .start()
+//      .awaitTermination()
 
-//    val streamingQuery = phieuGuiDs.writeStream
-//                                   .outputMode("append")
-//                                   .format("console")
-//                                   .start()
-//                                   .awaitTermination()]
-
-
-
-    phieuGuiDs.writeStream
-              .foreachBatch((dataSet: Dataset[PhieuGui], batchId: Long) => {
-                dataSet.write
-                       .format("jdbc")
-                       .options(postgresqlSinkOptions)
-                       .mode(SaveMode.Append)
-                       .save()
-              })
-              .start()
-              .awaitTermination()
+    ds.writeStream
+      .outputMode("append")
+      .format("console")
+      .start()
+      .awaitTermination()
   }
 }
