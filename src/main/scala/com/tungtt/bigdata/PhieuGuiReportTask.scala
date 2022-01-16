@@ -1,49 +1,31 @@
 package com.tungtt.bigdata
 
-import com.tungtt.bigdata.models.{PhieuGui, SyncData}
+import com.tungtt.bigdata.models.SyncData
 import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession}
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType, StructType}
 
-import java.math.BigInteger
+import java.sql.{Date, Timestamp}
 
 object PhieuGuiReportTask {
 
-  val phieuGuiStruct: StructType = new StructType()
-    .add("payload", new StructType()
-      .add("after", new StructType()
-        .add("ma_phieugui", StringType, nullable = true)
-        .add("ma_khgui", StringType, nullable = true)
-        .add("ngay_nhap_may", StringType, nullable = true)
-        .add("tong_tien", DecimalType(0,9), nullable = true)
-        .add("tong_vat", new StructType()
-          .add("scale", IntegerType, nullable = true)
-          .add("value", StringType, nullable = true)
-          ,
-        nullable = true)
-        ,
-      nullable = false)
-      .add("source", new StructType()
-        .add("ts_ms", LongType, nullable = true)
-        ,
-        nullable = false)
-      ,
-    nullable = false)
+  case class PhieuGui(var ma_khgui: String,
+                      var ngay_nhap_may: Date,
+                      var tong_tien: BigDecimal) {
 
-  case class PhieuGui(var ma_phieugui: String,
-                      var ma_khgui: String,
-                      var ngay_nhap_may: String,
-                      var tong_tien: BigDecimal,
-                      var tong_vat: BigDecimal,
-                      var timestamp: Long) {
+  }
+
+  case class BaoCaoKhachHang(var ma_khgui: String,
+                             var ngay_nhap_may: Date,
+                             var san_luong: Long,
+                             var doanh_thu: BigDecimal) {
 
   }
 
   val postgresqlSinkOptions: Map[String, String] = Map(
-    "dbtable" -> "phieu_gui_kafka",
+    "dbtable" -> "bao_cao_khach_hang_kafka",
     "user" -> "",
     "password" -> "",
     "driver" -> "org.postgresql.Driver",
-    "url" -> "jdbc:postgresql://:5432/postgres"
+    "url" -> "jdbc:postgresql://<ip>:5432/postgres"
   )
 
   def main(args: Array[String]): Unit = {
@@ -62,34 +44,42 @@ object PhieuGuiReportTask {
              .option("subscribe", "phieu_gui")
              .load()
 
-    val ds = df.selectExpr("CAST(value AS STRING)").as[String]
-               .select(from_json($"value", phieuGuiStruct).alias("value"))
-               .map(syncData => {
-                 println(syncData.get(0).getClass);
-                 PhieuGui("1", "a", "a", BigDecimal(1), BigDecimal(2), 1234567)
-               })
-//               .groupBy(
-//                 window($"timestamp", "1 minutes", "5 minutes"),
-//                 col("ma_phieugui")
-//               )
-//               .agg(Map(
-//                 "ma_phieugui" -> "count",
-//               ))
+    val syncDataStruct = Encoders.product[SyncData[PhieuGui]].schema
 
-//    ds.writeStream
-//      .foreachBatch((dataSet: Dataset[PhieuGui], batchId: Long) => {
-//        dataSet.write
-//               .format("jdbc")
-//               .options(postgresqlSinkOptions)
-//               .mode(SaveMode.Append)
-//               .save()
-//      })
-//      .start()
-//      .awaitTermination()
+    val ds = df.selectExpr("CAST(value AS STRING)", "timestamp").as[(String, Timestamp)]
+               .select(from_json(col("value"), syncDataStruct).as[SyncData[PhieuGui]].alias("value"), col("timestamp"))
+               .select("value.payload.after.*", "timestamp")
+               .withWatermark("timestamp", "1 minute")
+               .groupBy(
+                 window(col("timestamp"), "1 minute", "1 minute"),
+                 col("ma_khgui"), col("ngay_nhap_may"),
+               )
+               .agg(
+                 count("ma_khgui").alias("san_luong"),
+                 sum("tong_tien").alias("doanh_thu")
+               )
+               .select(
+                 col("ma_khgui"),
+                 col("ngay_nhap_may"),
+                 col("san_luong"),
+                 col("doanh_thu")
+               ).as[BaoCaoKhachHang]
 
     ds.writeStream
-      .outputMode("append")
+      .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
+        dataSet.write
+               .format("jdbc")
+               .options(postgresqlSinkOptions)
+               .mode(SaveMode.Append)
+               .save()
+      })
+      .start()
+      .awaitTermination()
+
+    ds.writeStream
+      .outputMode("complete")
       .format("console")
+      .option("truncate","false")
       .start()
       .awaitTermination()
   }
