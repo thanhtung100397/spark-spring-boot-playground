@@ -49,6 +49,7 @@ object PhieuGuiReportTask {
     val ds = df.selectExpr("CAST(value AS STRING)", "timestamp").as[(String, Timestamp)]
                .select(from_json(col("value"), syncDataStruct).as[SyncData[PhieuGui]].alias("value"), col("timestamp"))
                .select("value.payload.after.*", "timestamp")
+//               .map(row => BaoCaoKhachHang("hello", Date.valueOf("2021-01-01"), 1, 1))
                .withWatermark("timestamp", "1 minute")
                .groupBy(
                  window(col("timestamp"), "1 minute", "1 minute"),
@@ -65,22 +66,23 @@ object PhieuGuiReportTask {
                  col("doanh_thu")
                ).as[BaoCaoKhachHang]
 
-    ds.writeStream
-      .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
-        dataSet.write
-               .format("jdbc")
-               .options(postgresqlSinkOptions)
-               .mode(SaveMode.Append)
-               .save()
-      })
-      .start()
-      .awaitTermination()
+    val qs1 = ds.writeStream
+                .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
+                  dataSet.write
+                         .format("jdbc")
+                         .options(postgresqlSinkOptions)
+                         .mode(SaveMode.Append)
+                         .save()
+                })
+                .start()
 
-    ds.writeStream
-      .outputMode("complete")
-      .format("console")
-      .option("truncate","false")
-      .start()
-      .awaitTermination()
+    val qs2 = ds.writeStream
+                .outputMode("complete")
+                .format("console")
+                .option("truncate", "false")
+                .start()
+
+    qs1.awaitTermination()
+    qs2.awaitTermination()
   }
 }
