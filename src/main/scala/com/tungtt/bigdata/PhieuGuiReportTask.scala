@@ -1,7 +1,7 @@
 package com.tungtt.bigdata
 
 import com.tungtt.bigdata.models.{DebeziumDecimal, SyncData}
-import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession}
+import org.apache.spark.sql.{Dataset, Encoders, Row, SaveMode, SparkSession}
 
 import java.sql.{Date, Timestamp}
 
@@ -62,6 +62,14 @@ object PhieuGuiReportTask {
                ).as[(SyncData[PhieuGuiRaw], Timestamp)]
                .map(tuple => {
                  val (syncData, timestamp) = tuple
+                 val beforeData = syncData.payload.before
+                 val afterData = syncData.payload.after
+                 if (afterData == null)
+                   // delete
+                 else if (beforeData == null)
+                   // insert
+                 else
+                   // update
                  (
                    syncData.payload.after.ma_khgui,
                    syncData.payload.after.ngay_nhap_may,
@@ -71,21 +79,21 @@ object PhieuGuiReportTask {
                  )
                })
                .toDF("ma_khgui", "ngay_nhap_may", "tong_tien", "tong_vat", "timestamp")
-               .withWatermark("timestamp", "1 minute")
-               .groupBy(
-                 window(col("timestamp"), "1 minute", "1 minute"),
-                 col("ma_khgui"), col("ngay_nhap_may"),
-               )
-               .agg(
-                 count("ma_khgui").alias("san_luong"),
-                 sum(col("tong_tien").minus(col("tong_vat"))).alias("doanh_thu")
-               )
-               .select(
-                 col("ma_khgui"),
-                 col("ngay_nhap_may"),
-                 col("san_luong"),
-                 col("doanh_thu")
-               ).as[BaoCaoKhachHang]
+//               .withWatermark("timestamp", "1 minute")
+//               .groupBy(
+//                 window(col("timestamp"), "1 minute", "1 minute"),
+//                 col("ma_khgui"), col("ngay_nhap_may"),
+//               )
+//               .agg(
+//                 count("ma_khgui").alias("san_luong"),
+//                 sum(col("tong_tien").minus(col("tong_vat"))).alias("doanh_thu")
+//               )
+//               .select(
+//                 col("ma_khgui"),
+//                 col("ngay_nhap_may"),
+//                 col("san_luong"),
+//                 col("doanh_thu")
+//               ).as[BaoCaoKhachHang]
 
 //    val qs1 = ds.writeStream
 //                .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
@@ -97,13 +105,22 @@ object PhieuGuiReportTask {
 //                })
 //                .start()
 
-    val qs2 = ds.writeStream
-                .outputMode("complete")
-                .format("console")
-                .option("truncate", "false")
+    val qs1 = ds.writeStream
+                .foreachBatch((dataSet: Dataset[Row], batchId: Long) => {
+                  dataSet.write
+                         .format("jdbc")
+                         .options(postgresqlSinkOptions)
+                         .mode(SaveMode.Overwrite)
+                         .save()
+                })
                 .start()
 
-//    qs1.awaitTermination()
+    val qs2 = ds.writeStream
+                .outputMode("append")
+                .format("console")
+                .start()
+
+    qs1.awaitTermination()
     qs2.awaitTermination()
   }
 }
