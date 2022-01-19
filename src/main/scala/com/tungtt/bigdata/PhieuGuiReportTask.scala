@@ -1,15 +1,24 @@
 package com.tungtt.bigdata
 
-import com.tungtt.bigdata.models.SyncData
+import com.tungtt.bigdata.models.{DebeziumDecimal, SyncData}
 import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession}
 
 import java.sql.{Date, Timestamp}
 
 object PhieuGuiReportTask {
 
+  case class PhieuGuiRaw(var ma_khgui: String,
+                         var ngay_nhap_may: Date,
+                         var tong_tien: BigDecimal,
+                         var tong_vat: DebeziumDecimal) {
+
+  }
+
   case class PhieuGui(var ma_khgui: String,
                       var ngay_nhap_may: Date,
-                      var tong_tien: BigDecimal) {
+                      var tong_tien: BigDecimal,
+                      var tong_vat: BigDecimal,
+                      var timestamp: Timestamp) {
 
   }
 
@@ -44,12 +53,24 @@ object PhieuGuiReportTask {
              .option("subscribe", "phieu_gui")
              .load()
 
-    val syncDataStruct = Encoders.product[SyncData[PhieuGui]].schema
+    val syncDataStruct = Encoders.product[SyncData[PhieuGuiRaw]].schema
 
-    val ds = df.selectExpr("CAST(value AS STRING)", "timestamp").as[(String, Timestamp)]
-               .select(from_json(col("value"), syncDataStruct).as[SyncData[PhieuGui]].alias("value"), col("timestamp"))
-               .select("value.payload.after.*", "timestamp")
-//               .map(row => BaoCaoKhachHang("hello", Date.valueOf("2021-01-01"), 1, 1))
+    val ds = df.selectExpr("CAST(value AS STRING)", "timestamp")
+               .select(
+                 from_json(col("value"), syncDataStruct).alias("value"),
+                 col("timestamp")
+               ).as[(SyncData[PhieuGuiRaw], Timestamp)]
+               .map(tuple => {
+                 val (syncData, timestamp) = tuple
+                 (
+                   syncData.payload.after.ma_khgui,
+                   syncData.payload.after.ngay_nhap_may,
+                   syncData.payload.after.tong_tien,
+                   syncData.payload.after.tong_vat.toDecimal,
+                   timestamp
+                 )
+               })
+               .toDF("ma_khgui", "ngay_nhap_may", "tong_tien", "tong_vat", "timestamp")
                .withWatermark("timestamp", "1 minute")
                .groupBy(
                  window(col("timestamp"), "1 minute", "1 minute"),
@@ -57,7 +78,7 @@ object PhieuGuiReportTask {
                )
                .agg(
                  count("ma_khgui").alias("san_luong"),
-                 sum("tong_tien").alias("doanh_thu")
+                 sum(col("tong_tien").minus(col("tong_vat"))).alias("doanh_thu")
                )
                .select(
                  col("ma_khgui"),
@@ -66,15 +87,15 @@ object PhieuGuiReportTask {
                  col("doanh_thu")
                ).as[BaoCaoKhachHang]
 
-    val qs1 = ds.writeStream
-                .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
-                  dataSet.write
-                         .format("jdbc")
-                         .options(postgresqlSinkOptions)
-                         .mode(SaveMode.Append)
-                         .save()
-                })
-                .start()
+//    val qs1 = ds.writeStream
+//                .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
+//                  dataSet.write
+//                         .format("jdbc")
+//                         .options(postgresqlSinkOptions)
+//                         .mode(SaveMode.Append)
+//                         .save()
+//                })
+//                .start()
 
     val qs2 = ds.writeStream
                 .outputMode("complete")
@@ -82,7 +103,7 @@ object PhieuGuiReportTask {
                 .option("truncate", "false")
                 .start()
 
-    qs1.awaitTermination()
+//    qs1.awaitTermination()
     qs2.awaitTermination()
   }
 }
