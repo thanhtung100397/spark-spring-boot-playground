@@ -3,22 +3,14 @@ package com.tungtt.bigdata
 import com.tungtt.bigdata.models.{DebeziumDecimal, SyncData}
 import org.apache.spark.sql.{Dataset, Encoders, Row, SaveMode, SparkSession}
 
-import java.sql.{Date, Timestamp}
+import java.sql.{Connection, Date, DriverManager, Timestamp}
 
 object PhieuGuiReportTask {
 
-  case class PhieuGuiRaw(var ma_khgui: String,
+  case class PhieuGui(var ma_khgui: String,
                          var ngay_nhap_may: Date,
                          var tong_tien: BigDecimal,
                          var tong_vat: DebeziumDecimal) {
-
-  }
-
-  case class PhieuGui(var ma_khgui: String,
-                      var ngay_nhap_may: Date,
-                      var tong_tien: BigDecimal,
-                      var tong_vat: BigDecimal,
-                      var timestamp: Timestamp) {
 
   }
 
@@ -53,23 +45,23 @@ object PhieuGuiReportTask {
              .option("subscribe", "phieu_gui")
              .load()
 
-    val syncDataStruct = Encoders.product[SyncData[PhieuGuiRaw]].schema
+    val syncDataStruct = Encoders.product[SyncData[PhieuGui]].schema
 
     val ds = df.selectExpr("CAST(value AS STRING)", "timestamp")
                .select(
                  from_json(col("value"), syncDataStruct).alias("value"),
                  col("timestamp")
-               ).as[(SyncData[PhieuGuiRaw], Timestamp)]
+               ).as[(SyncData[PhieuGui], Timestamp)]
                .map(tuple => {
                  val (syncData, timestamp) = tuple
                  val beforeData = syncData.payload.before
                  val afterData = syncData.payload.after
-                 if (afterData == null)
-                   // delete
-                 else if (beforeData == null)
-                   // insert
-                 else
-                   // update
+//                 if (afterData == null)
+//                   // delete
+//                 else if (beforeData == null)
+//                   // insert
+//                 else
+//                   // update
                  (
                    syncData.payload.after.ma_khgui,
                    syncData.payload.after.ngay_nhap_may,
@@ -107,11 +99,32 @@ object PhieuGuiReportTask {
 
     val qs1 = ds.writeStream
                 .foreachBatch((dataSet: Dataset[Row], batchId: Long) => {
-                  dataSet.write
-                         .format("jdbc")
-                         .options(postgresqlSinkOptions)
-                         .mode(SaveMode.Overwrite)
-                         .save()
+                  val dbc: Connection = DriverManager.getConnection(
+                    postgresqlSinkOptions("url"),
+                    postgresqlSinkOptions("user"),
+                    postgresqlSinkOptions("password"),
+                  )
+
+                  val totalRows = dataSet.count().intValue();
+
+                  val querySt = dbc.prepareStatement(
+                    s"INSERT INTO ${postgresqlSinkOptions("dbtable")} (ma_khgui, ngay_nhap_may, tong_tien, tong_vat) " +
+                         s"VALUES ${List.fill(totalRows)("(?,?,?,?)").mkString(",")} " +
+                         s"ON DUPLICATE KEY CONFLICT (ma_khgui, ngay_nhap_may) DO UPDATE SET " +
+                         s"tong_tien = tong_tien + EXCLUDED.tong_tien, " +
+                         s"tong_vat = tong_vat + EXCLUDED.tong_vat"
+                  )
+
+                  var idx = 1;
+                  dataSet.foreach(row => {
+                    querySt.setString(idx++, row.getAs[String]("ma_khgui"))
+                  })
+
+//                  dataSet.write
+//                         .format("jdbc")
+//                         .options(postgresqlSinkOptions)
+//                         .mode(SaveMode.Overwrite)
+//                         .save()
                 })
                 .start()
 
