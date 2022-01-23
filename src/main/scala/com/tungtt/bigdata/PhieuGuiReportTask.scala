@@ -15,24 +15,25 @@ object PhieuGuiReportTask {
   }
 
   case class BaoCaoKhachHang(var ma_khgui: String,
-                             var ngay_nhap_may: Date,
+                             var ngay_nhap_may: String,
                              var san_luong: Long,
                              var doanh_thu: BigDecimal) {
 
   }
 
   val postgresqlSinkOptions: Map[String, String] = Map(
-    "dbtable" -> "bao_cao_khach_hang_kafka",
+    "dbtable" -> "test",
+    "createTableColumnTypes" -> "ma_khgui VARCHAR(36), ngay_nhap_may DATE,INTEGER, doanh_thu DECIMAL, PRIMARY KEY (ma_khgui, ngay_nhap_may)",
     "user" -> "",
     "password" -> "",
     "driver" -> "org.postgresql.Driver",
-    "url" -> "jdbc:postgresql://<ip>:5432/postgres"
+    "url" -> "jdbc:postgresql://:5432/postgres"
   )
 
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder()
                             .master("local[1]")
-                            .appName("KafkaDemo")
+                            .appName("PhieuGuiReportTask")
                             .getOrCreate()
 
     import spark.implicits._
@@ -54,82 +55,102 @@ object PhieuGuiReportTask {
                ).as[(SyncData[PhieuGui], Timestamp)]
                .map(tuple => {
                  val (syncData, timestamp) = tuple
-                 val beforeData = syncData.payload.before
-                 val afterData = syncData.payload.after
-//                 if (afterData == null)
-//                   // delete
-//                 else if (beforeData == null)
-//                   // insert
-//                 else
-//                   // update
-                 (
-                   syncData.payload.after.ma_khgui,
-                   syncData.payload.after.ngay_nhap_may,
-                   syncData.payload.after.tong_tien,
-                   syncData.payload.after.tong_vat.toDecimal,
-                   timestamp
-                 )
+                 val oldData = syncData.payload.before
+                 val newData = syncData.payload.after
+                 if (newData == null)
+                   // delete
+                   (
+                     newData.ma_khgui,
+                     newData.ngay_nhap_may,
+                     -1,
+                     -newData.tong_tien,
+                     -newData.tong_vat.toDecimal,
+                     timestamp
+                   )
+                 else if (oldData == null) {
+                   // insert
+                   (
+                     newData.ma_khgui,
+                     newData.ngay_nhap_may,
+                     1,
+                     newData.tong_tien,
+                     newData.tong_vat.toDecimal,
+                     timestamp
+                   )
+                 } else
+                   //update
+                   (
+                     newData.ma_khgui,
+                     newData.ngay_nhap_may,
+                     0,
+                     newData.tong_tien,
+                     newData.tong_vat.toDecimal,
+                     timestamp
+                   )
                })
-               .toDF("ma_khgui", "ngay_nhap_may", "tong_tien", "tong_vat", "timestamp")
-//               .withWatermark("timestamp", "1 minute")
-//               .groupBy(
-//                 window(col("timestamp"), "1 minute", "1 minute"),
-//                 col("ma_khgui"), col("ngay_nhap_may"),
-//               )
-//               .agg(
-//                 count("ma_khgui").alias("san_luong"),
-//                 sum(col("tong_tien").minus(col("tong_vat"))).alias("doanh_thu")
-//               )
-//               .select(
-//                 col("ma_khgui"),
-//                 col("ngay_nhap_may"),
-//                 col("san_luong"),
-//                 col("doanh_thu")
-//               ).as[BaoCaoKhachHang]
+               .toDF(
+                 "ma_khgui", "ngay_nhap_may", "counter", "tong_tien", "tong_vat", "timestamp"
+               )
+               .withWatermark("timestamp", "5 minutes")
+               .groupBy(
+                 window(col("timestamp"), "1 day", "1 day"),
+                 col("ma_khgui"), col("ngay_nhap_may"),
+               )
+               .agg(
+                 sum(col("counter")).alias("san_luong"),
+                 sum(col("tong_tien").minus(col("tong_vat"))).alias("doanh_thu")
+               )
+               .select(
+                 col("ma_khgui"),
+                 date_format(col("ngay_nhap_may"), "yyyy-MM-dd").alias("ngay_nhap_may"),
+                 col("san_luong"), col("doanh_thu")
+               ).as[BaoCaoKhachHang]
+
+
+    val qs1 = ds.map(data => {
+      (
+
+      )
+        s"INSERT INTO ${postgresqlSinkOptions("dbtable")} (ma_khgui, ngay_nhap_may, san_luong, doanh_thu) " +
+        s"VALUES ('${data.ma_khgui}', '${data.ngay_nhap_may}', ${data.san_luong}, ${data.doanh_thu}) " +
+        s"ON CONFLICT (ma_khgui, ngay_nhap_may) DO UPDATE SET " +
+        s"san_luong = ${postgresqlSinkOptions("dbtable")}.san_luong + EXCLUDED.san_luong, " +
+        s"doanh_thu = ${postgresqlSinkOptions("dbtable")}.doanh_thu + EXCLUDED.doanh_thu "
+      })
+      .writeStream
+      .outputMode("complete")
+      .foreachBatch((data: Dataset[String], batchId: Long) => {
+        data.coalesce(1)
+            .write
+            .mode("append")
+            .format("text")
+            .text("data/bao_cao/output")
+      })
+      .start()
 
 //    val qs1 = ds.writeStream
 //                .foreachBatch((dataSet: Dataset[BaoCaoKhachHang], batchId: Long) => {
 //                  dataSet.write
 //                         .format("jdbc")
 //                         .options(postgresqlSinkOptions)
-//                         .mode(SaveMode.Append)
+//                         .mode(SaveMode.Overwrite)
 //                         .save()
 //                })
 //                .start()
 
-    val qs1 = ds.writeStream
-                .foreachBatch((dataSet: Dataset[Row], batchId: Long) => {
-                  val dbc: Connection = DriverManager.getConnection(
-                    postgresqlSinkOptions("url"),
-                    postgresqlSinkOptions("user"),
-                    postgresqlSinkOptions("password"),
-                  )
-
-                  val totalRows = dataSet.count().intValue();
-
-                  val querySt = dbc.prepareStatement(
-                    s"INSERT INTO ${postgresqlSinkOptions("dbtable")} (ma_khgui, ngay_nhap_may, tong_tien, tong_vat) " +
-                         s"VALUES ${List.fill(totalRows)("(?,?,?,?)").mkString(",")} " +
-                         s"ON DUPLICATE KEY CONFLICT (ma_khgui, ngay_nhap_may) DO UPDATE SET " +
-                         s"tong_tien = tong_tien + EXCLUDED.tong_tien, " +
-                         s"tong_vat = tong_vat + EXCLUDED.tong_vat"
-                  )
-
-                  var idx = 1;
-                  dataSet.foreach(row => {
-                    querySt.setString(idx++, row.getAs[String]("ma_khgui"))
-                  })
-
-//                  dataSet.write
-//                         .format("jdbc")
-//                         .options(postgresqlSinkOptions)
-//                         .mode(SaveMode.Overwrite)
-//                         .save()
-                })
-                .start()
+//    val qs1 = ds.writeStream
+//                .foreachBatch((dataSet: Dataset[Row], batchId: Long) => {
+//                  val dbc: Connection = DriverManager.getConnection(
+//                    postgresqlSinkOptions("url"),
+//                    postgresqlSinkOptions("user"),
+//                    postgresqlSinkOptions("password"),
+//                  )
+//                })
+//                .start()
 
     val qs2 = ds.writeStream
-                .outputMode("append")
+                .outputMode("complete")
+                .option("truncate", value = false)
                 .format("console")
                 .start()
 
